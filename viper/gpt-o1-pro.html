@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Viper Clone</title>
+  <style>
+    * { margin: 0; padding: 0; }
+    body { background: #000; }
+    canvas {
+      display: block;
+      background: #000; /* Game area background */
+    }
+    .score {
+      position: absolute;
+      color: #ffff00; /* default for P1 */
+      font-family: 'Press Start 2P', monospace;
+      font-size: 28px;
+      text-shadow: 2px 2px #000;
+      padding: 10px;
+    }
+    #scoreP2 {
+      right: 0;
+      color: #ff0000; /* default for P2 */
+    }
+    #gameOver {
+      display: none;
+      position: absolute;
+      top: 40%;
+      width: 100%;
+      text-align: center;
+      color: #fff;
+      font-size: 32px;
+      font-family: 'Press Start 2P', monospace;
+      text-shadow: 2px 2px #000;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="scoreP1" class="score">0</div>
+  <div id="scoreP2" class="score" style="right:0">0</div>
+  <div id="gameOver">
+    <div>GAME OVER</div>
+    <div style="font-size:20px; margin-top:15px;">Press R to restart</div>
+  </div>
+
+  <script>
+    // ------------------- CONFIGURABLE PARAMETERS -------------------
+    const SPEED = 2.5;          // Movement speed (units/frame)
+    const TURN_RATE = 4 * Math.PI / 180; // Radians per update
+    const TRAIL_THICKNESS = 4;
+    const GAP_LENGTH = 20;      // Length of the gap in drawing
+    const GAP_FREQUENCY = 150;  // Distance traveled between gaps
+    const PLAYER1_COLOR = [255, 255, 0];   // Yellow
+    const PLAYER2_COLOR = [255, 0, 0];     // Red
+    const COLOR_TOLERANCE = 10; // For collision checks with opponent trail
+
+    // Canvas and rendering
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    // Offscreen canvas for "old trails" so we can avoid fresh-cap collisions
+    let trailCanvas, trailCtx;
+
+    // Scores
+    const scoreP1El = document.getElementById('scoreP1');
+    const scoreP2El = document.getElementById('scoreP2');
+    let scoreP1 = 0;
+    let scoreP2 = 0;
+
+    // Game Over UI
+    const gameOverEl = document.getElementById('gameOver');
+    let gameOver = false;
+
+    // Player state
+    function createPlayer(startX, startY, startAngle, color) {
+      return {
+        x: startX,
+        y: startY,
+        angle: startAngle,
+        alive: true,
+        color: color,
+        distSinceGap: 0,  // distance traveled since last gap cycle
+        drawing: true,    // are we currently drawing (or in a gap)?
+      };
+    }
+
+    let p1, p2;
+
+    // Handle user input
+    const keys = {};
+    window.addEventListener('keydown', (e) => { keys[e.key.toLowerCase()] = true; });
+    window.addEventListener('keyup',   (e) => { keys[e.key.toLowerCase()] = false; });
+
+    // Resize the canvas to fill window
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      // Recreate offscreen canvas
+      trailCanvas = document.createElement('canvas');
+      trailCanvas.width = canvas.width;
+      trailCanvas.height = canvas.height;
+      trailCtx = trailCanvas.getContext('2d', { alpha: false });
+      trailCtx.fillStyle = '#000';
+      trailCtx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    // Initialize / reset game state
+    function initGame() {
+      resizeCanvas();
+      scoreP1 = scoreP2 = 0;
+      updateScoreDisplays();
+
+      // Positions (example: near bottom edges with diagonal up directions)
+      p1 = createPlayer(50, 50, -Math.PI/4, PLAYER1_COLOR);
+      p2 = createPlayer(canvas.width - 50, 50, -3*Math.PI/4, PLAYER2_COLOR);
+
+      // Clear main canvas
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Hide game over
+      gameOverEl.style.display = 'none';
+      gameOver = false;
+    }
+
+    function updateScoreDisplays() {
+      scoreP1El.textContent = scoreP1;
+      scoreP2El.textContent = scoreP2;
+    }
+
+    // Helper to draw a line segment to the trail offscreen canvas
+    function drawTrailSegment(player, oldX, oldY) {
+      if (!player.drawing) return; // skip drawing if in a gap
+      trailCtx.strokeStyle = `rgb(${player.color[0]}, ${player.color[1]}, ${player.color[2]})`;
+      trailCtx.lineWidth = TRAIL_THICKNESS;
+      trailCtx.lineCap = 'round';
+      trailCtx.lineJoin = 'round';
+      trailCtx.beginPath();
+      trailCtx.moveTo(oldX, oldY);
+      trailCtx.lineTo(player.x, player.y);
+      trailCtx.stroke();
+    }
+
+    // Check collision with boundaries
+    function checkWallCollision(player) {
+      if (player.x < 0 || player.x >= canvas.width || 
+          player.y < 0 || player.y >= canvas.height) {
+        player.alive = false;
+      }
+    }
+
+    // Compare color with tolerance
+    function matchesColor(r, g, b, target, tolerance) {
+      return (Math.abs(r - target[0]) <= tolerance &&
+              Math.abs(g - target[1]) <= tolerance &&
+              Math.abs(b - target[2]) <= tolerance);
+    }
+
+    // Check collision with existing trail
+    function checkTrailCollision(player) {
+      // If out of bounds already, skip
+      if (!player.alive) return;
+
+      // Read pixel from trailCanvas at player head
+      const pxData = trailCtx.getImageData(Math.floor(player.x), Math.floor(player.y), 1, 1).data;
+      const r = pxData[0], g = pxData[1], b = pxData[2];
+
+      // Self-collision: color must match exactly (strict)
+      if (matchesColor(r, g, b, player.color, 0)) {
+        player.alive = false;
+        return;
+      }
+      // Opponent trail: color check with some tolerance
+      const otherColor = (player === p1) ? p2.color : p1.color;
+      if (matchesColor(r, g, b, otherColor, COLOR_TOLERANCE)) {
+        player.alive = false;
+      }
+    }
+
+    // Update distance / gap logic
+    function updateGapLogic(player, distTraveled) {
+      // Update distance traveled
+      player.distSinceGap += distTraveled;
+      if (player.drawing) {
+        // If it's time to start a gap
+        if (player.distSinceGap > GAP_FREQUENCY) {
+          player.drawing = false;
+          player.distSinceGap = 0; // reset
+        }
+      } else {
+        // If currently in gap, check if we've traveled gap length
+        if (player.distSinceGap > GAP_LENGTH) {
+          player.drawing = true;
+          player.distSinceGap = 0;
+        }
+      }
+    }
+
+    // Main update loop
+    function gameLoop() {
+      if (gameOver) {
+        // Wait for 'r' to restart
+        if (keys['r']) initGame();
+        requestAnimationFrame(gameLoop);
+        return;
+      }
+
+      // Turn inputs
+      if (p1.alive) {
+        if (keys['q']) p1.angle -= TURN_RATE;
+        if (keys['w']) p1.angle += TURN_RATE;
+      }
+      if (p2.alive) {
+        if (keys['o']) p2.angle -= TURN_RATE;
+        if (keys['p']) p2.angle += TURN_RATE;
+      }
+
+      // Calculate new positions but don't draw yet
+      let oldP1x = p1.x, oldP1y = p1.y;
+      let oldP2x = p2.x, oldP2y = p2.y;
+
+      if (p1.alive) {
+        p1.x += Math.cos(p1.angle) * SPEED;
+        p1.y += Math.sin(p1.angle) * SPEED;
+      }
+      if (p2.alive) {
+        p2.x += Math.cos(p2.angle) * SPEED;
+        p2.y += Math.sin(p2.angle) * SPEED;
+      }
+
+      // Collision checks
+      if (p1.alive) {
+        checkWallCollision(p1);
+        checkTrailCollision(p1);
+      }
+      if (p2.alive) {
+        checkWallCollision(p2);
+        checkTrailCollision(p2);
+      }
+
+      // Update distance for gap logic
+      if (p1.alive) {
+        let dist1 = Math.hypot(p1.x - oldP1x, p1.y - oldP1y);
+        updateGapLogic(p1, dist1);
+      }
+      if (p2.alive) {
+        let dist2 = Math.hypot(p2.x - oldP2x, p2.y - oldP2y);
+        updateGapLogic(p2, dist2);
+      }
+
+      // Draw new trail segments into trailCanvas after collisions are checked
+      if (p1.alive) drawTrailSegment(p1, oldP1x, oldP1y);
+      if (p2.alive) drawTrailSegment(p2, oldP2x, oldP2y);
+
+      // Copy trailCanvas onto main canvas
+      ctx.drawImage(trailCanvas, 0, 0);
+
+      // Optionally draw player heads (small circles)
+      if (p1.alive) {
+        ctx.fillStyle = `rgb(${p1.color[0]}, ${p1.color[1]}, ${p1.color[2]})`;
+        ctx.beginPath();
+        ctx.arc(p1.x, p1.y, TRAIL_THICKNESS*0.6, 0, 2*Math.PI);
+        ctx.fill();
+      }
+      if (p2.alive) {
+        ctx.fillStyle = `rgb(${p2.color[0]}, ${p2.color[1]}, ${p2.color[2]})`;
+        ctx.beginPath();
+        ctx.arc(p2.x, p2.y, TRAIL_THICKNESS*0.6, 0, 2*Math.PI);
+        ctx.fill();
+      }
+
+      // Update score if players are alive
+      if (p1.alive) scoreP1 += 1/60; // ~1 point per second at 60 FPS
+      if (p2.alive) scoreP2 += 1/60;
+      updateScoreDisplays();
+
+      // Check for game over (both eliminated or only one left but we consider that final)
+      if (!p1.alive && !p2.alive) {
+        gameOver = true;
+        gameOverEl.style.display = 'block';
+      }
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Start
+    initGame();
+    gameLoop();
+  </script>
+</body>
+</html>

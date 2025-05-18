@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Viper Clone</title>
+  <style>
+    html, body {
+      padding: 0; margin: 0;
+      width: 100vw; height: 100vh;
+      background: #000;
+      overflow: hidden;
+    }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    /* Pixel-art font from Google Fonts, fallback monospace */
+    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+    .overlay {
+      position: fixed;
+      top:0; left:0; width:100vw; height:100vh;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      align-items: center; justify-content: center;
+      flex-direction: column;
+      z-index: 10;
+    }
+    .overlay h1 {
+      color: #fff; font-family: 'Press Start 2P', monospace;
+      font-size: 48px; letter-spacing: 2px;
+      margin-bottom: 32px; text-shadow: 2px 2px 6px #000, 0 0 12px #fff;
+    }
+    .overlay p {
+      color: #ffd700; font-family: 'Press Start 2P', monospace;
+      font-size: 20px; margin-top:0;
+      text-shadow: 1px 1px 6px #000, 0 0 12px #fff;
+    }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="overlay" class="overlay" style="display:none;">
+  <h1>GAME OVER</h1>
+  <p>Press R to restart</p>
+</div>
+<script>
+/* --- Configurable parameters --- */
+const CFG = {
+  // Arena
+  background: "#000000",
+
+  // Score
+  font: "'Press Start 2P', monospace",
+  fontSize: 28,
+  fontWeight: "bold",
+  shadow: "2px 2px 8px #000",
+
+  // Trail
+  trailThickness: 6,
+  trailCap: "round", // "round" for smoothness
+  P1Color: "#FFFF00",
+  P2Color: "#FF0000",
+
+  // Vipers
+  speed: 2.5, // px per frame
+  turnRateDeg: 4, // degrees per frame
+  P1Start: { xOff: 50, yOff: 50, angle: -Math.PI/4 }, // bottom-left, up-right
+  P2Start: { xOff: 50, yOff: 50, angle: -3*Math.PI/4 }, // bottom-right, up-left
+
+  // Trail gaps
+  gapLength: 20,          // px
+  gapFreq: 150,           // px (trail length between gaps)
+  minGapDist: 1.2,        // px between points (for dense line)
+
+  // Collision
+  colorTolerance: 40, // [0..255] per RGB, for opponent line only
+  freshCapDistance: 18, // px, how far after last segment to ignore self-collision
+
+  // Control keys
+  keys: {
+    P1_left: 'KeyQ',  P1_right: 'KeyW',
+    P2_left: 'KeyO',  P2_right: 'KeyP',
+    Restart: 'KeyR'
+  },
+
+  // Animation
+  fps: 60
+};
+
+/* --- State --- */
+let W, H, arenaRect; // canvas size & boundaries
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+
+// Each viper has: {x, y, angle, trail[], alive, trailDist, gapDist, inGap, lastTrailPt}
+let players, scores, aliveCount, gameOver, lastTimestamp, scoreTimer;
+
+/* --- Utility --- */
+function lerp(a, b, t) { return a + (b-a)*t; }
+function dist2(x1,y1,x2,y2) { let dx=x1-x2, dy=y1-y2; return dx*dx+dy*dy; }
+function rgbHexToArr(hex) {
+  hex = hex.replace(/^#/, "");
+  if(hex.length===3) hex = hex.split('').map(c=>c+c).join('');
+  let num = parseInt(hex,16);
+  return [ (num>>16)&255, (num>>8)&255, num&255 ];
+}
+
+/* --- Resizing --- */
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W;
+  canvas.height = H;
+  arenaRect = { x:0, y:0, w:W, h:H };
+}
+window.addEventListener('resize', resize);
+
+/* --- Game Logic --- */
+
+function resetGame() {
+  resize();
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,W,H);
+  overlay.style.display = "none";
+  scores = [0,0];
+  aliveCount = 2;
+  gameOver = false;
+  scoreTimer = Date.now();
+
+  players = [
+    createPlayer(
+      CFG.P1Start.xOff,
+      H - CFG.P1Start.yOff,
+      CFG.P1Start.angle,
+      CFG.P1Color
+    ),
+    createPlayer(
+      W - CFG.P2Start.xOff,
+      H - CFG.P2Start.yOff,
+      CFG.P2Start.angle,
+      CFG.P2Color
+    )
+  ];
+}
+
+function createPlayer(x, y, angle, color) {
+  return {
+    x, y, angle, color,
+    alive: true,
+    trail: [{x, y}],   // trail is array of {x, y} points
+    trailDist: 0,      // total trail length since last gap
+    gapDist: 0,        // distance within current gap
+    inGap: false,
+    keyLeft: false, keyRight: false,
+    lastTrailPt: {x, y}
+  };
+}
+
+/* --- Controls --- */
+document.addEventListener('keydown', e => {
+  if(gameOver && e.code === CFG.keys.Restart) { resetGame(); return; }
+  switch(e.code) {
+    case CFG.keys.P1_left:  players[0].keyLeft = true; break;
+    case CFG.keys.P1_right: players[0].keyRight = true; break;
+    case CFG.keys.P2_left:  players[1].keyLeft = true; break;
+    case CFG.keys.P2_right: players[1].keyRight = true; break;
+  }
+});
+document.addEventListener('keyup', e => {
+  switch(e.code) {
+    case CFG.keys.P1_left:  players[0].keyLeft = false; break;
+    case CFG.keys.P1_right: players[0].keyRight = false; break;
+    case CFG.keys.P2_left:  players[1].keyLeft = false; break;
+    case CFG.keys.P2_right: players[1].keyRight = false; break;
+  }
+});
+
+/* --- Main loop --- */
+function loop() {
+  if (!gameOver) step();
+  draw();
+  requestAnimationFrame(loop);
+}
+function step() {
+  for(let i=0; i<2; ++i) {
+    let p = players[i];
+    if(!p.alive) continue;
+
+    // Turning
+    if(p.keyLeft)  p.angle -= CFG.turnRateDeg * Math.PI/180;
+    if(p.keyRight) p.angle += CFG.turnRateDeg * Math.PI/180;
+
+    // Movement
+    let dx = Math.cos(p.angle) * CFG.speed;
+    let dy = Math.sin(p.angle) * CFG.speed;
+    let newX = p.x + dx, newY = p.y + dy;
+    let segDist = Math.hypot(dx, dy);
+
+    // Gaps
+    if(!p.inGap) {
+      p.trailDist += segDist;
+      if(p.trailDist >= CFG.gapFreq) {
+        p.inGap = true; p.gapDist = 0; p.trailDist = 0;
+      }
+    }
+    if(p.inGap) {
+      p.gapDist += segDist;
+      if(p.gapDist >= CFG.gapLength) {
+        p.inGap = false; p.gapDist = 0;
+        // Start a new trail segment
+        p.trail.push({x: newX, y: newY});
+        p.lastTrailPt = {x: newX, y: newY};
+      }
+    }
+
+    // Trail drawing: only add point if not in gap
+    if(!p.inGap) {
+      let last = p.trail[p.trail.length-1];
+      // Insert dense points for smoothness
+      let dist = Math.hypot(newX-last.x, newY-last.y);
+      if(dist >= CFG.minGapDist) {
+        let n = Math.ceil(dist/CFG.minGapDist);
+        for(let j=1;j<=n;++j) {
+          let px = lerp(last.x, newX, j/n);
+          let py = lerp(last.y, newY, j/n);
+          p.trail.push({x: px, y: py});
+          p.lastTrailPt = {x: px, y: py};
+        }
+      } else {
+        p.trail.push({x: newX, y: newY});
+        p.lastTrailPt = {x: newX, y: newY};
+      }
+    }
+
+    // Collision: wall
+    if(newX < 0 || newY < 0 || newX > W || newY > H) {
+      p.alive = false;
+      aliveCount--;
+      continue;
+    }
+
+    // Collision: own trail (skip last fresh cap)
+    if(checkSelfCollision(p, newX, newY)) {
+      p.alive = false;
+      aliveCount--;
+      continue;
+    }
+
+    // Collision: opponent's trail
+    let opp = players[1-i];
+    if(checkTrailCollision(opp, newX, newY)) {
+      p.alive = false;
+      aliveCount--;
+      continue;
+    }
+
+    // Update head position
+    p.x = newX; p.y = newY;
+  }
+  // Score
+  if(aliveCount>0) {
+    let now = Date.now();
+    let d = (now - scoreTimer)/1000;
+    if(d>=1) {
+      for(let i=0;i<2;++i) if(players[i].alive) scores[i] += Math.floor(d);
+      scoreTimer = now;
+    }
+  }
+  // Game over?
+  if(aliveCount===0) {
+    gameOver = true;
+    overlay.style.display = "flex";
+  }
+}
+
+/* --- Collision --- */
+function checkSelfCollision(p, x, y) {
+  // Start checking a little after fresh trail cap
+  let minCapIdx = p.trail.length - 1;
+  let skipDist = 0, capDist = 0;
+  for(let i = p.trail.length-1; i>0; --i) {
+    let segA = p.trail[i], segB = p.trail[i-1];
+    let d = Math.hypot(segA.x-segB.x, segA.y-segB.y);
+    capDist += d;
+    if(capDist > CFG.freshCapDistance) {
+      minCapIdx = i-1;
+      break;
+    }
+  }
+  // Check all trail segments up to (not including) minCapIdx
+  for(let i=1; i<minCapIdx; ++i) {
+    let a = p.trail[i-1], b = p.trail[i];
+    if(lineCircleCollide(a.x, a.y, b.x, b.y, x, y, CFG.trailThickness/2)) return true;
+  }
+  return false;
+}
+function checkTrailCollision(p, x, y) {
+  // Against all trail segments of the opponent
+  for(let i=1; i<p.trail.length; ++i) {
+    let a = p.trail[i-1], b = p.trail[i];
+    if(lineCircleCollide(a.x, a.y, b.x, b.y, x, y, CFG.trailThickness/2)) return true;
+  }
+  return false;
+}
+
+// Line-segment/circle collision
+function lineCircleCollide(x1,y1,x2,y2,cx,cy,r) {
+  // Find closest point on segment to (cx,cy)
+  let dx = x2-x1, dy = y2-y1;
+  let len2 = dx*dx + dy*dy;
+  if(len2 === 0) return Math.hypot(x1-cx, y1-cy) <= r;
+  let t = ((cx-x1)*dx + (cy-y1)*dy)/len2;
+  t = Math.max(0, Math.min(1, t));
+  let px = x1 + t*dx, py = y1 + t*dy;
+  return Math.hypot(px-cx, py-cy) <= r;
+}
+
+/* --- Drawing --- */
+function draw() {
+  // Clear
+  ctx.fillStyle = CFG.background;
+  ctx.fillRect(0,0,W,H);
+
+  // Draw trails
+  for(let i=0; i<2; ++i) {
+    let p = players[i];
+    ctx.save();
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = CFG.trailThickness;
+    ctx.lineCap = CFG.trailCap;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    let drawing = false;
+    for(let j=0;j<p.trail.length;++j) {
+      let pt = p.trail[j];
+      if(!drawing) { ctx.moveTo(pt.x, pt.y); drawing=true; }
+      else ctx.lineTo(pt.x, pt.y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Draw heads (optional, as colored circles)
+  for(let i=0; i<2; ++i) {
+    let p = players[i];
+    if(!p.alive) continue;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, CFG.trailThickness*0.8, 0, 2*Math.PI);
+    ctx.fillStyle = "#fff";
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 12;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, CFG.trailThickness*0.6, 0, 2*Math.PI);
+    ctx.fillStyle = p.color;
+    ctx.shadowBlur = 0;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Draw scores
+  ctx.save();
+  ctx.font = `${CFG.fontWeight} ${CFG.fontSize}px ${CFG.font}`;
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  ctx.shadowColor = "#000";
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = "#FFFF00";
+  ctx.fillText(`P1: ${scores[0]}`, 16, 12);
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#FF0000";
+  ctx.fillText(`P2: ${scores[1]}`, W-16, 12);
+  ctx.restore();
+}
+
+/* --- Start game --- */
+resetGame();
+resize();
+loop();
+
+</script>
+</body>
+</html>

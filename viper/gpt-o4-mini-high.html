@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Viper Clone</title>
+  <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; background: #000; }
+    #gameCanvas { display: block; }
+    .score {
+      position: absolute;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 28px;
+      font-weight: bold;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.7);
+      color: #fff;
+      pointer-events: none;
+      user-select: none;
+    }
+    #score1 { top: 10px; left: 10px; color: #FFFF00; }
+    #score2 { top: 10px; right: 10px; color: #FF0000; }
+    #overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: #FFF;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 36px;
+      visibility: hidden;
+    }
+    #overlay p { margin: 10px; }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="score1" class="score">0</div>
+  <div id="score2" class="score">0</div>
+  <div id="overlay">
+    <p>GAME OVER</p>
+    <p>Press R to restart</p>
+  </div>
+  <script>
+    // Configuration
+    const config = {
+      speed: 2.5,
+      turnRate: (4 * Math.PI / 180), // radians per update
+      trailThickness: 4,
+      gapLength: 20,
+      gapFrequency: 150,
+      colors: { p1: '#FFFF00', p2: '#FF0000' }
+    };
+
+    // Canvas Setup
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Game State
+    let players = [];
+    let keys = {};
+    let lastTime = 0;
+    let scores = { p1: 0, p2: 0 };
+    let gameOver = false;
+
+    class Viper {
+      constructor(x, y, angle, color) {
+        this.x = x; this.y = y; this.angle = angle;
+        this.color = color;
+        this.drawing = true;
+        this.distSinceToggle = 0;
+        this.nextToggle = config.gapFrequency;
+      }
+      update(dt) {
+        // Turning
+        if (this === players[0]) {
+          if (keys['Q']) this.angle -= config.turnRate;
+          if (keys['W']) this.angle += config.turnRate;
+        } else {
+          if (keys['O']) this.angle -= config.turnRate;
+          if (keys['P']) this.angle += config.turnRate;
+        }
+        // Move
+        const dx = Math.cos(this.angle) * config.speed;
+        const dy = Math.sin(this.angle) * config.speed;
+        const newX = this.x + dx;
+        const newY = this.y + dy;
+        // Draw trail
+        ctx.lineWidth = config.trailThickness;
+        ctx.lineCap = ctx.lineJoin = 'round';
+        ctx.strokeStyle = this.color;
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y);
+        if (this.drawing) ctx.lineTo(newX, newY);
+        else ctx.lineTo(this.x, this.y);
+        ctx.stroke();
+        // Gap logic
+        const dist = Math.hypot(dx, dy);
+        this.distSinceToggle += dist;
+        if (this.distSinceToggle >= this.nextToggle) {
+          this.drawing = !this.drawing;
+          this.distSinceToggle = 0;
+          this.nextToggle = this.drawing ? config.gapFrequency : config.gapLength;
+        }
+        this.x = newX; this.y = newY;
+      }
+      checkCollision() {
+        // Wall
+        if (this.x < 0 || this.x > canvas.width || this.y < 0 || this.y > canvas.height) return true;
+        // Pixel check
+        const px = Math.floor(this.x);
+        const py = Math.floor(this.y);
+        const data = ctx.getImageData(px, py, 1, 1).data;
+        // Transparent vs trail vs background (#000)
+        if (data[0] !== 0 || data[1] !== 0 || data[2] !== 0) return true;
+        return false;
+      }
+    }
+
+    function init() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      players = [
+        new Viper(50, canvas.height - 50, -Math.PI/4, config.colors.p1),
+        new Viper(canvas.width - 50, canvas.height - 50, -3*Math.PI/4, config.colors.p2)
+      ];
+      scores = { p1: 0, p2: 0 };
+      document.getElementById('score1').textContent = '0';
+      document.getElementById('score2').textContent = '0';
+      gameOver = false;
+      document.getElementById('overlay').style.visibility = 'hidden';
+      lastTime = performance.now();
+      requestAnimationFrame(loop);
+    }
+
+    function loop(timestamp) {
+      if (gameOver) return;
+      const dt = timestamp - lastTime;
+      lastTime = timestamp;
+      // Update
+      players.forEach(p => p.update(dt));
+      // Collision
+      players.forEach((p, i) => {
+        if (!gameOver && p.checkCollision()) {
+          gameOver = true;
+          endGame();
+        }
+      });
+      // Score
+      scores.p1 += dt/1000;
+      scores.p2 += dt/1000;
+      document.getElementById('score1').textContent = Math.floor(scores.p1);
+      document.getElementById('score2').textContent = Math.floor(scores.p2);
+      if (!gameOver) requestAnimationFrame(loop);
+    }
+
+    function endGame() {
+      document.getElementById('overlay').style.visibility = 'visible';
+    }
+
+    // Input
+    window.addEventListener('keydown', e => {
+      keys[e.key.toUpperCase()] = true;
+      if (gameOver && e.key.toUpperCase() === 'R') init();
+    });
+    window.addEventListener('keyup', e => keys[e.key.toUpperCase()] = false);
+
+    // Start
+    init();
+  </script>
+</body>
+</html>

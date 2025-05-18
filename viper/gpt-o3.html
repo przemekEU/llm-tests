@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Viper Clone</title>
+  <!--  Full‑screen black background and pixel‑art font  -->
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; }
+    /*  HUD  */
+    .score {
+      position: absolute;
+      top: 8px;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 28px;
+      font-weight: bold;
+      text-shadow: 2px 2px 2px #000;
+      pointer-events: none;
+      user-select: none;
+    }
+    #score1 { left: 8px;  color: #ffff00; }
+    #score2 { right: 8px; color: #ff0000; }
+    /*  Game‑over overlay  */
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Press Start 2P', monospace;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.55);
+      visibility: hidden;
+      pointer-events: none;
+      text-align: center;
+    }
+    #overlay h1 { font-size: 48px; margin: 0; }
+    #overlay p  { font-size: 24px; margin-top: 24px; }
+  </style>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="score1" class="score">0</div>
+  <div id="score2" class="score">0</div>
+  <div id="overlay">
+    <h1>GAME OVER</h1>
+    <p>Press R to restart</p>
+  </div>
+
+  <script>
+  /* ────────────────────────────────────────────────────────────────────
+     Viper Clone — single‑file HTML5 implementation
+     compliant with specification v1.1 (2‑player, gaps, scoring, restart)
+     Author: ChatGPT (OpenAI o3), May 2025
+  ──────────────────────────────────────────────────────────────────── */
+  (function () {
+    /* ============ Configurable parameters ============ */
+    const CONFIG = {
+      speed: 2.5,                  // px per frame
+      turnRate: Math.PI / 45,      // rad per frame (~4°)
+      trailWidth: 4,               // px
+      gapEvery: 150,               // px of drawn line before starting a gap
+      gapLength: 20,               // px of gap
+      selfCapTolerance: 6,         // px radius around freshest round cap to ignore
+    };
+
+    /* ============ Canvas & resize handling ============ */
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    let W, H;
+    function resize () {
+      W = canvas.width  = window.innerWidth;
+      H = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    /* ============ Key handling ============ */
+    const keys = Object.create(null);
+    window.addEventListener('keydown', e => {
+      keys[e.code] = true;
+      if (gameOver && e.code === 'KeyR') restart();
+    });
+    window.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+    /* ============ Player class ============ */
+    class Player {
+      constructor (opts) {
+        Object.assign(this, opts);
+        this.reset();
+      }
+      reset () {
+        this.x = this.startX();
+        this.y = this.startY();
+        this.angle = this.startAngle;
+        this.drawDist = 0;
+        this.gapLeft = 0;
+        this.alive = true;
+        this.score = 0;
+        this.lastCap = { x: this.x, y: this.y };
+      }
+      /*  Push new motion, draw trail segment if not in gap  */
+      step (dt) {
+        if (!this.alive) return;
+        // turning
+        if (keys[this.leftKey])  this.angle -= CONFIG.turnRate;
+        if (keys[this.rightKey]) this.angle += CONFIG.turnRate;
+
+        // motion vector
+        const vx = Math.cos(this.angle) * CONFIG.speed;
+        const vy = Math.sin(this.angle) * CONFIG.speed;
+        const nx = this.x + vx;
+        const ny = this.y + vy;
+
+        // handle gaps
+        if (this.gapLeft <= 0) {
+          // draw segment
+          ctx.strokeStyle = this.color;
+          ctx.lineWidth   = CONFIG.trailWidth;
+          ctx.lineCap     = 'round';
+          ctx.beginPath();
+          ctx.moveTo(this.x, this.y);
+          ctx.lineTo(nx, ny);
+          ctx.stroke();
+          this.drawDist += CONFIG.speed;
+          this.lastCap.x = nx; this.lastCap.y = ny;
+          if (this.drawDist >= CONFIG.gapEvery) {
+            this.drawDist = 0;
+            this.gapLeft  = CONFIG.gapLength;
+          }
+        } else {
+          this.gapLeft -= CONFIG.speed;
+        }
+
+        // wall collision
+        if (nx < 0 || nx > W || ny < 0 || ny > H) {
+          this.alive = false;
+        } else {
+          // pixel sample for trail collisions (opponent & own)
+          const pix = ctx.getImageData(nx, ny, 1, 1).data;
+          if (pix[3] > 10) {   // ignore transparent / AA fringe
+            // ignore own freshest cap to allow sharp turns
+            if (Math.hypot(nx - this.lastCap.x, ny - this.lastCap.y) > CONFIG.selfCapTolerance) {
+              this.alive = false;
+            }
+          }
+        }
+
+        this.x = nx; this.y = ny;
+        this.score += dt;
+      }
+    }
+
+    /* ============ Players (initialisation) ============ */
+    const p1 = new Player({
+      color:  '#ffff00',
+      leftKey:  'KeyQ', rightKey: 'KeyW',
+      startX: () => 50,
+      startY: () => H - 50,
+      startAngle: -Math.PI / 4,
+    });
+    const p2 = new Player({
+      color:  '#ff0000',
+      leftKey:  'KeyO', rightKey: 'KeyP',
+      startX: () => W - 50,
+      startY: () => H - 50,
+      startAngle: -3 * Math.PI / 4,
+    });
+    let players = [p1, p2];
+
+    /* ============ Game loop ============ */
+    let lastT = performance.now();
+    let gameOver = false;
+
+    function frame (t) {
+      const dt = (t - lastT) / 1000;
+      lastT = t;
+
+      if (!gameOver) {
+        players.forEach(p => p.step(dt));
+        updateHUD();
+        if (players.every(p => !p.alive)) endGame();
+      }
+      requestAnimationFrame(frame);
+    }
+
+    /* ============ HUD helpers ============ */
+    const s1 = document.getElementById('score1');
+    const s2 = document.getElementById('score2');
+    function updateHUD () {
+      s1.textContent = Math.floor(p1.score);
+      s2.textContent = Math.floor(p2.score);
+    }
+
+    /* ============ Game‑over & restart ============ */
+    const overlay = document.getElementById('overlay');
+    function endGame () {
+      gameOver = true;
+      overlay.style.visibility = 'visible';
+    }
+    function restart () {
+      gameOver = false;
+      overlay.style.visibility = 'hidden';
+      ctx.clearRect(0, 0, W, H);
+      players.forEach(p => p.reset());
+      lastT = performance.now();
+    }
+
+    /* ============ Kick‑off ============ */
+    requestAnimationFrame(frame);
+  })();
+  </script>
+</body>
+</html>

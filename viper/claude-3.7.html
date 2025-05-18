@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Viper Clone</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Press Start 2P', cursive;
+        }
+        
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        
+        #gameOverScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            font-size: 28px;
+            text-align: center;
+            display: none;
+        }
+        
+        #gameOverScreen h1 {
+            margin-bottom: 30px;
+        }
+        
+        #gameOverScreen p {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="gameOverScreen">
+        <h1>GAME OVER</h1>
+        <p>Press R to restart</p>
+    </div>
+
+    <script>
+        // Game Configuration
+        const config = {
+            backgroundColor: '#000000',
+            updateInterval: 16, // ~60fps
+            scoreUpdateInterval: 1000, // 1 second
+            players: {
+                p1: {
+                    color: '#FFFF00', // Yellow
+                    startX: 50,
+                    startY: window.innerHeight - 50,
+                    startAngle: -Math.PI / 4, // Diagonal up-right
+                    leftKey: 'q',
+                    rightKey: 'w',
+                    score: 0
+                },
+                p2: {
+                    color: '#FF0000', // Red
+                    startX: window.innerWidth - 50,
+                    startY: window.innerHeight - 50,
+                    startAngle: -3 * Math.PI / 4, // Diagonal up-left
+                    leftKey: 'o',
+                    rightKey: 'p',
+                    score: 0
+                }
+            },
+            viper: {
+                speed: 2.5,
+                turnRate: Math.PI / 45, // ~4 degrees
+                trailThickness: 4,
+                gapLength: 20,
+                gapFrequency: 150, // Distance before creating a gap
+            },
+            collision: {
+                opponentTrailTolerance: 10,
+                selfTrailTolerance: 5
+            }
+        };
+        
+        // Game State
+        const gameState = {
+            isGameOver: false,
+            players: {
+                p1: {
+                    x: config.players.p1.startX,
+                    y: config.players.p1.startY,
+                    angle: config.players.p1.startAngle,
+                    isAlive: true,
+                    score: 0,
+                    distanceSinceLastGap: 0,
+                    isDrawingTrail: true,
+                    gapDistance: 0,
+                    prevX: config.players.p1.startX,
+                    prevY: config.players.p1.startY,
+                    turnLeft: false,
+                    turnRight: false
+                },
+                p2: {
+                    x: config.players.p2.startX,
+                    y: config.players.p2.startY,
+                    angle: config.players.p2.startAngle,
+                    isAlive: true,
+                    score: 0,
+                    distanceSinceLastGap: 0,
+                    isDrawingTrail: true,
+                    gapDistance: 0,
+                    prevX: config.players.p2.startX,
+                    prevY: config.players.p2.startY,
+                    turnLeft: false,
+                    turnRight: false
+                }
+            },
+            lastScoreUpdate: 0
+        };
+        
+        // Setup Canvas
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        
+        // Resize canvas to fit window
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            // Update player starting positions based on new dimensions
+            if (!gameState.isGameOver) {
+                if (gameState.players.p1.x === config.players.p1.startX) {
+                    config.players.p1.startX = 50;
+                    config.players.p1.startY = window.innerHeight - 50;
+                    gameState.players.p1.x = config.players.p1.startX;
+                    gameState.players.p1.y = config.players.p1.startY;
+                    gameState.players.p1.prevX = config.players.p1.startX;
+                    gameState.players.p1.prevY = config.players.p1.startY;
+                }
+                
+                if (gameState.players.p2.x === config.players.p2.startX) {
+                    config.players.p2.startX = window.innerWidth - 50;
+                    config.players.p2.startY = window.innerHeight - 50;
+                    gameState.players.p2.x = config.players.p2.startX;
+                    gameState.players.p2.y = config.players.p2.startY;
+                    gameState.players.p2.prevX = config.players.p2.startX;
+                    gameState.players.p2.prevY = config.players.p2.startY;
+                }
+            }
+        }
+        
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+        
+        // Input Handling
+        document.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            
+            if (gameState.isGameOver && key === 'r') {
+                restartGame();
+                return;
+            }
+            
+            if (key === config.players.p1.leftKey) {
+                gameState.players.p1.turnLeft = true;
+            } else if (key === config.players.p1.rightKey) {
+                gameState.players.p1.turnRight = true;
+            } else if (key === config.players.p2.leftKey) {
+                gameState.players.p2.turnLeft = true;
+            } else if (key === config.players.p2.rightKey) {
+                gameState.players.p2.turnRight = true;
+            }
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            
+            if (key === config.players.p1.leftKey) {
+                gameState.players.p1.turnLeft = false;
+            } else if (key === config.players.p1.rightKey) {
+                gameState.players.p1.turnRight = false;
+            } else if (key === config.players.p2.leftKey) {
+                gameState.players.p2.turnLeft = false;
+            } else if (key === config.players.p2.rightKey) {
+                gameState.players.p2.turnRight = false;
+            }
+        });
+        
+        // Game Logic
+        function updatePlayer(player, playerConfig) {
+            if (!player.isAlive) return;
+            
+            // Store previous position
+            player.prevX = player.x;
+            player.prevY = player.y;
+            
+            // Handle turning
+            if (player.turnLeft) {
+                player.angle -= config.viper.turnRate;
+            }
+            if (player.turnRight) {
+                player.angle += config.viper.turnRate;
+            }
+            
+            // Update position
+            player.x += Math.cos(player.angle) * config.viper.speed;
+            player.y += Math.sin(player.angle) * config.viper.speed;
+            
+            // Calculate distance traveled this frame
+            const distanceTraveled = Math.sqrt(
+                Math.pow(player.x - player.prevX, 2) + 
+                Math.pow(player.y - player.prevY, 2)
+            );
+            
+            // Handle gap logic
+            if (player.isDrawingTrail) {
+                player.distanceSinceLastGap += distanceTraveled;
+                
+                if (player.distanceSinceLastGap >= config.viper.gapFrequency) {
+                    player.isDrawingTrail = false;
+                    player.gapDistance = 0;
+                    player.distanceSinceLastGap = 0;
+                }
+            } else {
+                player.gapDistance += distanceTraveled;
+                
+                if (player.gapDistance >= config.viper.gapLength) {
+                    player.isDrawingTrail = true;
+                    player.gapDistance = 0;
+                }
+            }
+            
+            // Check wall collision
+            if (
+                player.x < 0 || 
+                player.x > canvas.width || 
+                player.y < 0 || 
+                player.y > canvas.height
+            ) {
+                player.isAlive = false;
+            }
+            
+            // Check trail collision
+            if (checkTrailCollision(player)) {
+                player.isAlive = false;
+            }
+        }
+        
+        function checkTrailCollision(player) {
+            // Get pixel data at the player's current position
+            const pixelData = ctx.getImageData(
+                Math.floor(player.x), 
+                Math.floor(player.y), 
+                1, 
+                1
+            ).data;
+            
+            // Check if there's a non-black color at this position
+            if (pixelData[0] > 0 || pixelData[1] > 0 || pixelData[2] > 0) {
+                // Convert pixel data to hex for comparison
+                const pixelColor = rgbToHex(pixelData[0], pixelData[1], pixelData[2]);
+                
+                // Check if it's another player's trail
+                if (player === gameState.players.p1 && colorSimilar(pixelColor, config.players.p2.color, config.collision.opponentTrailTolerance)) {
+                    return true;
+                }
+                
+                if (player === gameState.players.p2 && colorSimilar(pixelColor, config.players.p1.color, config.collision.opponentTrailTolerance)) {
+                    return true;
+                }
+                
+                // Check if it's the player's own trail (more strict tolerance)
+                // Ignore fresh trail by checking if position is different enough from previous position
+                const distFromPrev = Math.sqrt(
+                    Math.pow(player.x - player.prevX, 2) + 
+                    Math.pow(player.y - player.prevY, 2)
+                );
+                
+                // If we're far enough from the previous position and the color is similar to our own
+                if (distFromPrev > config.viper.trailThickness) {
+                    if (player === gameState.players.p1 && colorSimilar(pixelColor, config.players.p1.color, config.collision.selfTrailTolerance)) {
+                        return true;
+                    }
+                    
+                    if (player === gameState.players.p2 && colorSimilar(pixelColor, config.players.p2.color, config.collision.selfTrailTolerance)) {
+                        return true;
+                    }
+                }
+            }
+            
+            return false;
+        }
+        
+        function colorSimilar(color1, color2, tolerance) {
+            // Convert hex colors to RGB
+            const rgb1 = hexToRgb(color1);
+            const rgb2 = hexToRgb(color2);
+            
+            // Calculate color distance
+            const distance = Math.sqrt(
+                Math.pow(rgb1.r - rgb2.r, 2) +
+                Math.pow(rgb1.g - rgb2.g, 2) +
+                Math.pow(rgb1.b - rgb2.b, 2)
+            );
+            
+            return distance <= tolerance;
+        }
+        
+        function hexToRgb(hex) {
+            // Handle shorthand
+            const shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
+            hex = hex.replace(shorthandRegex, (m, r, g, b) => {
+                return r + r + g + g + b + b;
+            });
+            
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : null;
+        }
+        
+        function rgbToHex(r, g, b) {
+            return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+        }
+        
+        function updateScores() {
+            const now = Date.now();
+            
+            if (now - gameState.lastScoreUpdate >= config.scoreUpdateInterval) {
+                if (gameState.players.p1.isAlive) {
+                    gameState.players.p1.score++;
+                }
+                if (gameState.players.p2.isAlive) {
+                    gameState.players.p2.score++;
+                }
+                gameState.lastScoreUpdate = now;
+            }
+        }
+        
+        function checkGameOver() {
+            if (!gameState.players.p1.isAlive && !gameState.players.p2.isAlive) {
+                gameState.isGameOver = true;
+                gameOverScreen.style.display = 'flex';
+            }
+        }
+        
+        function restartGame() {
+            // Reset canvas
+            ctx.fillStyle = config.backgroundColor;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Reset game state
+            gameState.isGameOver = false;
+            gameState.lastScoreUpdate = Date.now();
+            
+            gameState.players.p1 = {
+                x: config.players.p1.startX,
+                y: config.players.p1.startY,
+                angle: config.players.p1.startAngle,
+                isAlive: true,
+                score: 0,
+                distanceSinceLastGap: 0,
+                isDrawingTrail: true,
+                gapDistance: 0,
+                prevX: config.players.p1.startX,
+                prevY: config.players.p1.startY,
+                turnLeft: false,
+                turnRight: false
+            };
+            
+            gameState.players.p2 = {
+                x: config.players.p2.startX,
+                y: config.players.p2.startY,
+                angle: config.players.p2.startAngle,
+                isAlive: true,
+                score: 0,
+                distanceSinceLastGap: 0,
+                isDrawingTrail: true,
+                gapDistance: 0,
+                prevX: config.players.p2.startX,
+                prevY: config.players.p2.startY,
+                turnLeft: false,
+                turnRight: false
+            };
+            
+            // Hide game over screen
+            gameOverScreen.style.display = 'none';
+        }
+        
+        // Rendering
+        function render() {
+            // Draw player trails
+            if (gameState.players.p1.isAlive && gameState.players.p1.isDrawingTrail) {
+                ctx.beginPath();
+                ctx.moveTo(gameState.players.p1.prevX, gameState.players.p1.prevY);
+                ctx.lineTo(gameState.players.p1.x, gameState.players.p1.y);
+                ctx.strokeStyle = config.players.p1.color;
+                ctx.lineWidth = config.viper.trailThickness;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+            }
+            
+            if (gameState.players.p2.isAlive && gameState.players.p2.isDrawingTrail) {
+                ctx.beginPath();
+                ctx.moveTo(gameState.players.p2.prevX, gameState.players.p2.prevY);
+                ctx.lineTo(gameState.players.p2.x, gameState.players.p2.y);
+                ctx.strokeStyle = config.players.p2.color;
+                ctx.lineWidth = config.viper.trailThickness;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+            }
+            
+            // Render scores
+            ctx.font = '28px "Press Start 2P"';
+            ctx.textAlign = 'left';
+            ctx.fillStyle = config.players.p1.color;
+            ctx.fillText(`P1: ${gameState.players.p1.score}`, 20, 40);
+            
+            ctx.textAlign = 'right';
+            ctx.fillStyle = config.players.p2.color;
+            ctx.fillText(`P2: ${gameState.players.p2.score}`, canvas.width - 20, 40);
+        }
+        
+        // Game Loop
+        function gameLoop() {
+            if (!gameState.isGameOver) {
+                // Update player positions
+                updatePlayer(gameState.players.p1, config.players.p1);
+                updatePlayer(gameState.players.p2, config.players.p2);
+                
+                // Update scores
+                updateScores();
+                
+                // Check for game over
+                checkGameOver();
+                
+                // Render the game
+                render();
+            }
+            
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Initialize game
+        function init() {
+            // Set background
+            ctx.fillStyle = config.backgroundColor;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Start game loop
+            gameLoop();
+        }
+        
+        // Start the game
+        init();
+    </script>
+</body>
+</html>
