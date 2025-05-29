@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Viper Clone</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Press Start 2P', cursive;
+        }
+        
+        canvas {
+            display: block;
+            cursor: none;
+        }
+        
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: white;
+            display: none;
+            background-color: rgba(0, 0, 0, 0.8);
+            padding: 40px;
+            border: 3px solid white;
+            border-radius: 10px;
+        }
+        
+        #gameOver h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(255, 0, 0, 0.5);
+        }
+        
+        #gameOver p {
+            font-size: 16px;
+            color: #ccc;
+        }
+        
+        .score {
+            position: absolute;
+            font-size: 28px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            z-index: 10;
+        }
+        
+        #p1Score {
+            top: 20px;
+            left: 20px;
+            color: #FFFF00;
+        }
+        
+        #p2Score {
+            top: 20px;
+            right: 20px;
+            color: #FF0000;
+        }
+    </style>
+</head>
+<body>
+    <div id="p1Score" class="score">P1: 0</div>
+    <div id="p2Score" class="score">P2: 0</div>
+    <div id="gameOver">
+        <h1>GAME OVER</h1>
+        <p>Press R to restart</p>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // Game Configuration
+        const config = {
+            playerSpeed: 2.5,
+            trailThickness: 4,
+            backgroundColor: '#000000',
+            turnRate: 4 * Math.PI / 180, // 4 degrees in radians
+            p1Color: '#FFFF00',
+            p2Color: '#FF0000',
+            p1StartOffset: 50,
+            p2StartOffset: 50,
+            p1StartAngle: -Math.PI / 4, // -45 degrees
+            p2StartAngle: -3 * Math.PI / 4, // -135 degrees
+            gapLength: 20,
+            gapFrequency: 150,
+            colorTolerance: 30,
+            selfCollisionTolerance: 5
+        };
+
+        // Game State
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gameOverScreen = document.getElementById('gameOver');
+        const p1ScoreElement = document.getElementById('p1Score');
+        const p2ScoreElement = document.getElementById('p2Score');
+
+        let gameState = {
+            running: false,
+            players: {
+                p1: null,
+                p2: null
+            }
+        };
+
+        // Player Class
+        class Player {
+            constructor(name, color, startX, startY, startAngle) {
+                this.name = name;
+                this.color = color;
+                this.x = startX;
+                this.y = startY;
+                this.angle = startAngle;
+                this.alive = true;
+                this.score = 0;
+                this.trail = [];
+                this.currentSegment = [];
+                this.distanceTraveled = 0;
+                this.gapDistanceTraveled = 0;
+                this.inGap = false;
+                this.turningLeft = false;
+                this.turningRight = false;
+                this.scoreTimer = 0;
+                this.lastX = startX;
+                this.lastY = startY;
+            }
+
+            update() {
+                if (!this.alive) return;
+
+                // Handle turning
+                if (this.turningLeft) {
+                    this.angle -= config.turnRate;
+                }
+                if (this.turningRight) {
+                    this.angle += config.turnRate;
+                }
+
+                // Store previous position
+                this.lastX = this.x;
+                this.lastY = this.y;
+
+                // Move forward
+                const dx = Math.cos(this.angle) * config.playerSpeed;
+                const dy = Math.sin(this.angle) * config.playerSpeed;
+                this.x += dx;
+                this.y += dy;
+
+                // Update distance traveled
+                const segmentLength = Math.sqrt(dx * dx + dy * dy);
+                this.distanceTraveled += segmentLength;
+
+                // Handle gaps
+                if (!this.inGap) {
+                    this.gapDistanceTraveled += segmentLength;
+                    
+                    // Add point to current segment
+                    this.currentSegment.push({x: this.x, y: this.y});
+                    
+                    if (this.gapDistanceTraveled >= config.gapFrequency) {
+                        this.inGap = true;
+                        this.gapDistanceTraveled = 0;
+                        // Save current segment to trail
+                        if (this.currentSegment.length > 0) {
+                            this.trail.push([...this.currentSegment]);
+                            this.currentSegment = [];
+                        }
+                    }
+                } else {
+                    this.gapDistanceTraveled += segmentLength;
+                    if (this.gapDistanceTraveled >= config.gapLength) {
+                        this.inGap = false;
+                        this.gapDistanceTraveled = 0;
+                        // Start new segment from current position
+                        this.currentSegment = [{x: this.x, y: this.y}];
+                    }
+                }
+
+                // Update score (1 point per ~60 frames at 60fps)
+                this.scoreTimer++;
+                if (this.scoreTimer >= 60) {
+                    this.score++;
+                    this.scoreTimer = 0;
+                }
+            }
+
+            draw() {
+                ctx.strokeStyle = this.color;
+                ctx.lineWidth = config.trailThickness;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                // Draw completed trail segments
+                this.trail.forEach(segment => {
+                    if (segment.length > 1) {
+                        ctx.beginPath();
+                        ctx.moveTo(segment[0].x, segment[0].y);
+                        for (let i = 1; i < segment.length; i++) {
+                            ctx.lineTo(segment[i].x, segment[i].y);
+                        }
+                        ctx.stroke();
+                    }
+                });
+
+                // Draw current segment
+                if (this.currentSegment.length > 1) {
+                    ctx.beginPath();
+                    ctx.moveTo(this.currentSegment[0].x, this.currentSegment[0].y);
+                    for (let i = 1; i < this.currentSegment.length; i++) {
+                        ctx.lineTo(this.currentSegment[i].x, this.currentSegment[i].y);
+                    }
+                    ctx.stroke();
+                }
+
+                // Draw head indicator
+                if (this.alive) {
+                    ctx.fillStyle = this.color;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, config.trailThickness / 2 + 1, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            checkCollisions() {
+                if (!this.alive) return;
+
+                // Check wall collisions
+                if (this.x <= config.trailThickness/2 || 
+                    this.x >= canvas.width - config.trailThickness/2 ||
+                    this.y <= config.trailThickness/2 || 
+                    this.y >= canvas.height - config.trailThickness/2) {
+                    this.alive = false;
+                    
+                    // Draw final trail segment to wall if not in gap
+                    if (!this.inGap && this.currentSegment.length > 0) {
+                        this.trail.push([...this.currentSegment]);
+                    }
+                    return;
+                }
+
+                // Get pixel data for collision detection
+                const checkRadius = config.trailThickness / 2;
+                const imageData = ctx.getImageData(
+                    this.x - checkRadius, 
+                    this.y - checkRadius, 
+                    checkRadius * 2, 
+                    checkRadius * 2
+                );
+                
+                // Check for trail collisions
+                const pixels = imageData.data;
+                const centerX = checkRadius;
+                const centerY = checkRadius;
+                
+                for (let y = 0; y < imageData.height; y++) {
+                    for (let x = 0; x < imageData.width; x++) {
+                        const distance = Math.sqrt(
+                            Math.pow(x - centerX, 2) + 
+                            Math.pow(y - centerY, 2)
+                        );
+                        
+                        if (distance <= checkRadius) {
+                            const index = (y * imageData.width + x) * 4;
+                            const r = pixels[index];
+                            const g = pixels[index + 1];
+                            const b = pixels[index + 2];
+                            const a = pixels[index + 3];
+                            
+                            if (a > 128) { // Only check non-transparent pixels
+                                // Check for opponent's color
+                                const opponent = this.name === 'p1' ? gameState.players.p2 : gameState.players.p1;
+                                if (opponent && opponent.alive) {
+                                    const opponentRGB = hexToRgb(opponent.color);
+                                    if (colorMatch(r, g, b, opponentRGB.r, opponentRGB.g, opponentRGB.b, config.colorTolerance)) {
+                                        this.alive = false;
+                                        return;
+                                    }
+                                }
+                                
+                                // Check for self collision with strict tolerance
+                                const selfRGB = hexToRgb(this.color);
+                                if (colorMatch(r, g, b, selfRGB.r, selfRGB.g, selfRGB.b, config.selfCollisionTolerance)) {
+                                    // Avoid collision with freshly drawn trail cap
+                                    const pixelX = this.x - checkRadius + x;
+                                    const pixelY = this.y - checkRadius + y;
+                                    const distFromLastPos = Math.sqrt(
+                                        Math.pow(pixelX - this.lastX, 2) + 
+                                        Math.pow(pixelY - this.lastY, 2)
+                                    );
+                                    
+                                    if (distFromLastPos > config.trailThickness * 1.5) {
+                                        this.alive = false;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Helper functions
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : null;
+        }
+
+        function colorMatch(r1, g1, b1, r2, g2, b2, tolerance) {
+            return Math.abs(r1 - r2) <= tolerance &&
+                   Math.abs(g1 - g2) <= tolerance &&
+                   Math.abs(b1 - b2) <= tolerance;
+        }
+
+        // Initialize game
+        function initGame() {
+            gameState.running = true;
+            gameOverScreen.style.display = 'none';
+            
+            // Create players
+            gameState.players.p1 = new Player(
+                'p1',
+                config.p1Color,
+                config.p1StartOffset,
+                canvas.height - config.p1StartOffset,
+                config.p1StartAngle
+            );
+            
+            gameState.players.p2 = new Player(
+                'p2',
+                config.p2Color,
+                canvas.width - config.p2StartOffset,
+                canvas.height - config.p2StartOffset,
+                config.p2StartAngle
+            );
+            
+            updateScores();
+        }
+
+        // Update scores display
+        function updateScores() {
+            p1ScoreElement.textContent = `P1: ${gameState.players.p1.score}`;
+            p2ScoreElement.textContent = `P2: ${gameState.players.p2.score}`;
+        }
+
+        // Game loop
+        function gameLoop() {
+            if (!gameState.running) return;
+            
+            // Clear canvas
+            ctx.fillStyle = config.backgroundColor;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw trails first
+            gameState.players.p1.draw();
+            gameState.players.p2.draw();
+            
+            // Update players
+            gameState.players.p1.update();
+            gameState.players.p2.update();
+            
+            // Check collisions
+            gameState.players.p1.checkCollisions();
+            gameState.players.p2.checkCollisions();
+            
+            // Update scores
+            updateScores();
+            
+            // Check game over
+            if (!gameState.players.p1.alive && !gameState.players.p2.alive) {
+                gameState.running = false;
+                gameOverScreen.style.display = 'block';
+            }
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Handle keyboard input
+        const keys = {};
+        
+        document.addEventListener('keydown', (e) => {
+            keys[e.key.toLowerCase()] = true;
+            
+            // Update player turning states
+            if (gameState.players.p1) {
+                gameState.players.p1.turningLeft = keys['q'];
+                gameState.players.p1.turningRight = keys['w'];
+            }
+            if (gameState.players.p2) {
+                gameState.players.p2.turningLeft = keys['o'];
+                gameState.players.p2.turningRight = keys['p'];
+            }
+            
+            // Restart game
+            if (e.key.toLowerCase() === 'r' && !gameState.running) {
+                initGame();
+                gameLoop();
+            }
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            keys[e.key.toLowerCase()] = false;
+            
+            // Update player turning states
+            if (gameState.players.p1) {
+                gameState.players.p1.turningLeft = keys['q'];
+                gameState.players.p1.turningRight = keys['w'];
+            }
+            if (gameState.players.p2) {
+                gameState.players.p2.turningLeft = keys['o'];
+                gameState.players.p2.turningRight = keys['p'];
+            }
+        });
+
+        // Handle window resize
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Start game
+        initGame();
+        gameLoop();
+    </script>
+</body>
+</html>
