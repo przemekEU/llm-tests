@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Viper Clone</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+        }
+        canvas {
+            display: block;
+            background-color: #000000;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+            const CONFIG = {
+                // Game Mechanics
+                PLAYER_SPEED: 2.5, // Units per frame
+                TURN_RATE: 4 * (Math.PI / 180), // 4 degrees in radians per frame
+                TRAIL_THICKNESS: 4, // in pixels
+                
+                // Trail Gaps
+                GAP_FREQUENCY: 150, // Draw a gap after this much distance
+                GAP_LENGTH: 20, // The length of the gap
+                
+                // Collision
+                COLLISION_COLOR_TOLERANCE: 30, // How close a color needs to be to count as a collision
+                SELF_COLLISION_TOLERANCE: 1,   // Stricter tolerance for self-collision
+
+                // Display
+                BACKGROUND_COLOR: '#000000',
+                FONT: 'bold 28px "Press Start 2P"',
+                
+                // Player 1 Specifics
+                P1_COLOR: '#FFFF00', // Yellow
+                P1_START_POS: (w, h) => ({ x: 50, y: h - 50 }),
+                P1_START_ANGLE: -Math.PI / 4, // Up and Right (-45 degrees)
+                
+                // Player 2 Specifics
+                P2_COLOR: '#FF0000', // Red
+                P2_START_POS: (w, h) => ({ x: w - 50, y: h - 50 }),
+                P2_START_ANGLE: -3 * Math.PI / 4, // Up and Left (-135 degrees)
+            };
+            
+            class Player {
+                constructor(isPlayerOne) {
+                    this.isPlayerOne = isPlayerOne;
+                    this.color = isPlayerOne ? CONFIG.P1_COLOR : CONFIG.P2_COLOR;
+                    this.startPosFunc = isPlayerOne ? CONFIG.P1_START_POS : CONFIG.P2_START_POS;
+                    this.startAngle = isPlayerOne ? CONFIG.P1_START_ANGLE : CONFIG.P2_START_ANGLE;
+                    this.init();
+                }
+
+                init() {
+                    const startPos = this.startPosFunc(canvas.width, canvas.height);
+                    this.x = startPos.x;
+                    this.y = startPos.y;
+                    this.angle = this.startAngle;
+                    this.score = 0;
+                    this.isAlive = true;
+                    this.isDrawing = true;
+                    this.distanceToNextGap = CONFIG.GAP_FREQUENCY;
+                    this.gapCounter = 0;
+                }
+
+                update(keysPressed) {
+                    if (!this.isAlive) return;
+                    
+                    // Handle turning input
+                    if (this.isPlayerOne) {
+                        if (keysPressed['q']) this.angle -= CONFIG.TURN_RATE;
+                        if (keysPressed['w']) this.angle += CONFIG.TURN_RATE;
+                    } else {
+                        if (keysPressed['o']) this.angle -= CONFIG.TURN_RATE;
+                        if (keysPressed['p']) this.angle += CONFIG.TURN_RATE;
+                    }
+
+                    // Store old position for drawing
+                    const oldX = this.x;
+                    const oldY = this.y;
+
+                    // Calculate new position
+                    this.x += Math.cos(this.angle) * CONFIG.PLAYER_SPEED;
+                    this.y += Math.sin(this.angle) * CONFIG.PLAYER_SPEED;
+
+                    // Handle gap logic
+                    if (this.isDrawing) {
+                        this.distanceToNextGap -= CONFIG.PLAYER_SPEED;
+                        if (this.distanceToNextGap <= 0) {
+                            this.isDrawing = false;
+                            this.gapCounter = CONFIG.GAP_LENGTH;
+                        }
+                    } else {
+                        this.gapCounter -= CONFIG.PLAYER_SPEED;
+                        if (this.gapCounter <= 0) {
+                            this.isDrawing = true;
+                            this.distanceToNextGap = CONFIG.GAP_FREQUENCY;
+                        }
+                    }
+
+                    // Draw the trail segment if not in a gap
+                    if (this.isDrawing) {
+                        this.drawTrailSegment(oldX, oldY);
+                    }
+                    
+                    // Update score
+                    this.score += 1 / 60; // Approx 1 point per second at 60fps
+                }
+
+                drawTrailSegment(oldX, oldY) {
+                    ctx.beginPath();
+                    ctx.moveTo(oldX, oldY);
+                    ctx.lineTo(this.x, this.y);
+                    ctx.strokeStyle = this.color;
+                    ctx.lineWidth = CONFIG.TRAIL_THICKNESS;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.stroke();
+                }
+            }
+
+            class ViperGame {
+                constructor() {
+                    this.keysPressed = {};
+                    this.gameState = 'start'; // 'start', 'playing', 'gameOver'
+                    this.player1 = new Player(true);
+                    this.player2 = new Player(false);
+                    this.setupEventListeners();
+                    this.resizeCanvas();
+                    this.initGame();
+                }
+
+                setupEventListeners() {
+                    window.addEventListener('resize', () => this.resizeCanvas());
+                    window.addEventListener('keydown', (e) => this.handleKeyDown(e));
+                    window.addEventListener('keyup', (e) => this.handleKeyUp(e));
+                }
+
+                resizeCanvas() {
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerHeight;
+                    // When resizing, we need to restart to avoid players being stuck in old walls
+                    if (this.gameState !== 'gameOver') {
+                       this.initGame();
+                    }
+                }
+
+                handleKeyDown(e) {
+                    const key = e.key.toLowerCase();
+                    this.keysPressed[key] = true;
+
+                    if (key === 'r' && this.gameState === 'gameOver') {
+                        this.initGame();
+                    }
+                }
+
+                handleKeyUp(e) {
+                    this.keysPressed[e.key.toLowerCase()] = false;
+                }
+
+                initGame() {
+                    ctx.fillStyle = CONFIG.BACKGROUND_COLOR;
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    
+                    this.player1.init();
+                    this.player2.init();
+                    
+                    this.gameState = 'playing';
+                    if (!this.animationFrameId) {
+                        this.gameLoop();
+                    }
+                }
+
+                gameLoop() {
+                    if (this.gameState === 'playing') {
+                        this.update();
+                    }
+                    this.draw();
+                    
+                    this.animationFrameId = requestAnimationFrame(() => this.gameLoop());
+                }
+
+                update() {
+                    [this.player1, this.player2].forEach(p => {
+                        if (p.isAlive) {
+                            p.update(this.keysPressed);
+                            this.checkCollisions(p);
+                        }
+                    });
+
+                    if (!this.player1.isAlive && !this.player2.isAlive) {
+                        this.gameState = 'gameOver';
+                    }
+                }
+                
+                hexToRgb(hex) {
+                    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+                    return result ? {
+                        r: parseInt(result[1], 16),
+                        g: parseInt(result[2], 16),
+                        b: parseInt(result[3], 16)
+                    } : null;
+                }
+
+                isColorMatch(pixelData, targetColorHex, tolerance) {
+                    const targetRgb = this.hexToRgb(targetColorHex);
+                    if (!targetRgb) return false;
+
+                    // Ignore transparent pixels (alpha = 0) or background
+                    if (pixelData[3] < 50) return false;
+
+                    const rDiff = Math.abs(pixelData[0] - targetRgb.r);
+                    const gDiff = Math.abs(pixelData[1] - targetRgb.g);
+                    const bDiff = Math.abs(pixelData[2] - targetRgb.b);
+                    
+                    return rDiff < tolerance && gDiff < tolerance && bDiff < tolerance;
+                }
+
+                checkCollisions(player) {
+                    if (!player.isAlive) return;
+
+                    // Calculate point ahead of the player to check for collision
+                    const checkDistance = CONFIG.TRAIL_THICKNESS / 2 + 1;
+                    const checkX = player.x + Math.cos(player.angle) * checkDistance;
+                    const checkY = player.y + Math.sin(player.angle) * checkDistance;
+
+                    // 1. Wall Collision
+                    if (checkX <= 0 || checkX >= canvas.width || checkY <= 0 || checkY >= canvas.height) {
+                        player.isAlive = false;
+                        // Draw final trail segment to the wall
+                        if (player.isDrawing) {
+                            player.drawTrailSegment(player.x, player.y);
+                        }
+                        return;
+                    }
+
+                    // 2. Trail Collision (Self and Opponent)
+                    try {
+                        const pixelData = ctx.getImageData(Math.round(checkX), Math.round(checkY), 1, 1).data;
+                        
+                        // Self-collision
+                        if (this.isColorMatch(pixelData, player.color, CONFIG.SELF_COLLISION_TOLERANCE)) {
+                           player.isAlive = false;
+                           return;
+                        }
+
+                        // Opponent collision
+                        const opponent = player.isPlayerOne ? this.player2 : this.player1;
+                        if (this.isColorMatch(pixelData, opponent.color, CONFIG.COLLISION_COLOR_TOLERANCE)) {
+                           player.isAlive = false;
+                           return;
+                        }
+
+                    } catch (e) {
+                        // getImageData can throw an error if coords are out of bounds, which we already check.
+                        // This is just a safeguard.
+                        console.error("Collision check failed:", e);
+                    }
+                }
+
+                draw() {
+                    // Trails are drawn during update. This function handles UI overlays.
+                    this.drawScores();
+
+                    if (this.gameState === 'gameOver') {
+                        this.drawGameOverScreen();
+                    }
+                }
+
+                drawScores() {
+                    ctx.font = CONFIG.FONT;
+                    ctx.textBaseline = 'top';
+                    ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+                    ctx.shadowBlur = 5;
+                    ctx.shadowOffsetX = 2;
+                    ctx.shadowOffsetY = 2;
+
+                    // P1 Score
+                    ctx.fillStyle = CONFIG.P1_COLOR;
+                    ctx.textAlign = 'left';
+                    ctx.fillText(Math.floor(this.player1.score), 20, 10);
+
+                    // P2 Score
+                    ctx.fillStyle = CONFIG.P2_COLOR;
+                    ctx.textAlign = 'right';
+                    ctx.fillText(Math.floor(this.player2.score), canvas.width - 20, 10);
+                    
+                    // Reset shadow for other drawing operations
+                    ctx.shadowColor = 'transparent';
+                }
+
+                drawGameOverScreen() {
+                    // Semi-transparent overlay
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    
+                    // Game Over Text
+                    ctx.font = 'bold 80px "Press Start 2P"';
+                    ctx.fillStyle = 'white';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 40);
+
+                    // Restart Instruction
+                    ctx.font = 'bold 30px "Press Start 2P"';
+                    ctx.fillStyle = 'white';
+                    ctx.fillText('Press R to restart', canvas.width / 2, canvas.height / 2 + 40);
+                }
+            }
+
+            // Start the game!
+            new ViperGame();
+        });
+    </script>
+</body>
+</html>
