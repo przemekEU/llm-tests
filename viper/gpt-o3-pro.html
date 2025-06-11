@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Viper Clone</title>
+<style>
+html,body{margin:0;padding:0;background:#000;overflow:hidden}
+canvas{display:block}
+#overlay{
+ position:fixed;inset:0;background:rgba(0,0,0,.6);
+ display:flex;flex-direction:column;justify-content:center;align-items:center;
+ font-family:'Press Start 2P',monospace;font-size:48px;color:#fff;
+ text-shadow:2px 2px 4px #000;visibility:hidden}
+#overlay div:last-child{font-size:24px;margin-top:32px}
+.score{
+ position:fixed;top:10px;font-family:'Press Start 2P',monospace;
+ font-size:28px;font-weight:bold;text-shadow:2px 2px 4px #000}
+#score1{left:10px;color:#ffff00}
+#score2{right:10px;color:#ff0000}
+</style>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="overlay"><div>GAME OVER</div><div>Press R to Restart</div></div>
+<div id="score1" class="score">0</div>
+<div id="score2" class="score">0</div>
+
+<script>
+(()=>{
+// ---------- CONFIGURACJA ----------
+const cfg={
+ speed:2.5,                 // jednostek na klatkę (~150px/s przy 60 Hz)
+ turnRate:Math.PI/45,       // ~4° na klatkę
+ trailWidth:4,
+ gapEvery:150,              // dystans (px) rysowania przed przerwą
+ gapLength:20,              // długość przerwy
+ colors:["#ffff00","#ff0000"],
+ background:"#000000"
+};
+// ---------- KANWA ----------
+const canvas=document.getElementById('game'), ctx=canvas.getContext('2d');
+let W,H;
+const resize=()=>{W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight};
+window.addEventListener('resize',resize); resize();
+
+// ---------- NARZĘDZIA ----------
+const dist=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
+const segInt=(p,q,r,s)=>{           // przecięcie odcinków (p‑q i r‑s)
+ const cross=(a,b)=>a[0]*b[1]-a[1]*b[0];
+ const sub=(a,b)=>[a[0]-b[0],a[1]-b[1]];
+ const pq=sub(q,p), pr=sub(r,p), rs=sub(s,r);
+ const d=cross(pq,rs); if(Math.abs(d)<1e-9) return false;
+ const t=cross(pr,rs)/d, u=cross(pr,pq)/d;
+ return t>0&&t<1&&u>0&&u<1;
+};
+
+// ---------- KLASA GRACZA ----------
+class Player{
+ constructor(id){this.id=id;this.reset();}
+ reset(){
+   this.alive=true;
+   this.trail=[];                       // [{a:[x,y], b:[x,y]}]
+   this.distSinceGap=0; this.inGap=false; this.gapLeft=0;
+   const m=50;
+   this.pos=this.id? [W-m,H-m]: [m,H-m];
+   this.dir=this.id? -3*Math.PI/4 : -Math.PI/4;
+   this.prev=[...this.pos];
+ }
+ step(inp){
+   if(!this.alive) return;
+   if(inp.left)  this.dir-=cfg.turnRate;
+   if(inp.right) this.dir+=cfg.turnRate;
+   this.prev=[...this.pos];
+   this.pos[0]+=Math.cos(this.dir)*cfg.speed;
+   this.pos[1]+=Math.sin(this.dir)*cfg.speed;
+
+   const d=dist(this.prev,this.pos);
+   if(this.inGap){
+     this.gapLeft-=d;
+     if(this.gapLeft<=0){this.inGap=false;this.distSinceGap=0;}
+   }else{
+     this.distSinceGap+=d;
+     if(this.distSinceGap>=cfg.gapEvery){
+       this.inGap=true; this.gapLeft=cfg.gapLength;
+     }
+   }
+ }
+ record(){ if(!this.inGap && this.alive) this.trail.push({a:[...this.prev],b:[...this.pos]}); }
+ draw(){
+   ctx.strokeStyle=cfg.colors[this.id];
+   ctx.lineWidth=cfg.trailWidth;
+   ctx.lineCap="round"; ctx.lineJoin="round";
+   ctx.beginPath();
+   for(const s of this.trail){ctx.moveTo(...s.a);ctx.lineTo(...s.b);}
+   ctx.stroke();
+   ctx.fillStyle=cfg.colors[this.id];
+   ctx.beginPath(); ctx.arc(...this.pos,cfg.trailWidth,0,2*Math.PI); ctx.fill();
+ }
+}
+
+// ---------- WEJŚCIE ----------
+const key={}; onkeydown=e=>key[e.key.toLowerCase()]=true; onkeyup=e=>key[e.key.toLowerCase()]=false;
+const inputs=()=>[
+ {left:key['q'], right:key['w']},
+ {left:key['o'], right:key['p']}
+];
+
+// ---------- STAN GRY ----------
+let P, overlay=document.getElementById('overlay'), gameOver=false, scoreTimer=0;
+const scoreEls=[document.getElementById('score1'),document.getElementById('score2')];
+
+function init(){
+ P=[new Player(0),new Player(1)];
+ scoreEls.forEach(e=>e.textContent='0');
+ overlay.style.visibility='hidden'; gameOver=false; scoreTimer=0;
+ ctx.fillStyle=cfg.background; ctx.fillRect(0,0,W,H);
+}
+init();
+
+// ---------- KOLIZJE ----------
+const inBounds=p=>p[0]>=0&&p[0]<=W&&p[1]>=0&&p[1]<=H;
+function collisions(){
+ for(let i=0;i<2;i++){
+   const me=P[i]; if(!me.alive) continue;
+   if(!inBounds(me.pos)){me.alive=false;continue;}
+   // z własnym śladem (pomijamy ~10 px nowego odcinka)
+   for(let s=0; s<me.trail.length-10; s++){
+     if(segInt(me.prev,me.pos,me.trail[s].a,me.trail[s].b)){me.alive=false;break;}
+   }
+   // z przeciwnikiem
+   const op=P[1-i];
+   for(const seg of op.trail){
+     if(segInt(me.prev,me.pos,seg.a,seg.b)){me.alive=false;break;}
+   }
+ }
+}
+
+// ---------- PUNKTY ----------
+function updateScore(dt){
+ scoreTimer+=dt;
+ if(scoreTimer>=1000){scoreTimer-=1000;
+   P.forEach((pl,i)=>{ if(pl.alive) scoreEls[i].textContent=(+scoreEls[i].textContent)+1; });
+ }
+}
+
+// ---------- PETLA ----------
+let last=performance.now();
+function loop(t){
+ const dt=t-last; last=t;
+ P.forEach((pl,i)=>pl.step(inputs()[i]));
+ P.forEach(pl=>pl.record());
+ collisions();
+
+ ctx.fillStyle=cfg.background; ctx.fillRect(0,0,W,H);
+ P.forEach(pl=>pl.draw());
+ updateScore(dt);
+
+ if(!gameOver && P.every(pl=>!pl.alive)){gameOver=true; overlay.style.visibility='visible';}
+ requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---------- RESTART ----------
+addEventListener('keydown',e=>{ if(e.key.toLowerCase()==='r' && gameOver) init(); });
+})();
+</script>
+</body>
+</html>
